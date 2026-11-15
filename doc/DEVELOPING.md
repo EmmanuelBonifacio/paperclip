@@ -1329,6 +1329,11 @@ The full local Vitest commands remain available:
 pnpm test
 ```
 
+`pnpm test:setup` verifies a fresh embedded PostgreSQL cluster by applying the
+current migrations, checking connectivity, and removing its temporary data
+directory. It refuses to run when an external database URL is configured and
+disables the cached template for this check.
+
 `pnpm test` runs the Vitest suite only. Its default chat integration coverage runs
 first in six sequential, exact-cover child processes, each with its own home,
 config and embedded PostgreSQL. The remaining server invocation excludes that

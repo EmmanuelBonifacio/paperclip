@@ -1,5 +1,6 @@
 import type { ChildProcess } from "node:child_process";
 import { execFile, spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -100,15 +101,24 @@ export function ownTestPostgres(instance: TestPostgresInstance, dataDir?: string
     return path.join(path.dirname(child.spawnfile), `pg_ctl${path.extname(child.spawnfile) === ".exe" ? ".exe" : ""}`);
   }
 
+  function postmasterPidFileMissing(): boolean {
+    // On Windows pg_ctl can remove this after the server exits before Node reports the child exit.
+    return process.platform === "win32" && Boolean(dataDir) && !existsSync(path.join(dataDir!, "postmaster.pid"));
+  }
+
   async function requestStop(child: ChildProcess, mode: "fast" | "immediate", clean: boolean): Promise<void> {
     const control = controlPath(child);
     if (control && (clean || process.platform === "win32")) {
+      const waitFlag = process.platform === "win32" ? "-w" : "-W";
+      const waitSeconds = clean ? 30 : 10;
       try {
-        await execute(control, ["-D", dataDir!, "stop", "-m", mode, "-W"], {
-          timeout: 2000, maxBuffer: 64 * 1024, windowsHide: true,
+        await execute(control, [
+          "-D", dataDir!, "stop", "-m", mode, "-t", String(waitSeconds), waitFlag,
+        ], {
+          timeout: (waitSeconds + 5) * 1000, maxBuffer: 64 * 1024, windowsHide: true,
         });
       } catch (error) {
-        if (child.exitCode === null && child.signalCode === null) throw error;
+        if (child.exitCode === null && child.signalCode === null && !postmasterPidFileMissing()) throw error;
       }
     } else child.kill(mode === "fast" ? "SIGINT" : "SIGQUIT");
   }
@@ -142,6 +152,7 @@ export function ownTestPostgres(instance: TestPostgresInstance, dataDir?: string
           throw new TestPostgresShutdownError("Test PostgreSQL startup did not settle before shutdown; its data directory is retained");
         }
         const child = instance.process;
+        let stoppedByPostmaster = false;
         if (!child) {
           if (!await settlesWithin(instance.stop(), 10_000)) {
             throw new TestPostgresShutdownError("Test PostgreSQL shutdown timed out; its data directory is retained");
@@ -152,18 +163,29 @@ export function ownTestPostgres(instance: TestPostgresInstance, dataDir?: string
           try {
             await requestStop(child, "fast", clean);
             if (!await settlesWithin(exited, clean ? 30_000 : 5_000)) {
-              if (clean) throw new TestPostgresShutdownError("Test PostgreSQL did not complete clean shutdown; the template cannot be published");
-              usedImmediateShutdown = true;
-              await requestStop(child, "immediate", false);
-              if (!await settlesWithin(exited, 5_000)) {
-                throw new TestPostgresShutdownError("Test PostgreSQL did not exit after fast and immediate shutdown; its data directory is retained");
+              if (postmasterPidFileMissing()) {
+                stoppedByPostmaster = true;
+              } else {
+                if (clean) throw new TestPostgresShutdownError("Test PostgreSQL did not complete clean shutdown; the template cannot be published");
+                usedImmediateShutdown = true;
+                await requestStop(child, "immediate", false);
+                if (!await settlesWithin(exited, 5_000)) {
+                  if (postmasterPidFileMissing()) stoppedByPostmaster = true;
+                  else {
+                    throw new TestPostgresShutdownError("Test PostgreSQL did not exit after fast and immediate shutdown; its data directory is retained");
+                  }
+                }
               }
             }
           } finally {
             child.removeListener("exit", onExit!);
           }
         }
-        stoppedCleanly = !usedImmediateShutdown && (!child || (child.exitCode === 0 && child.signalCode === null));
+        stoppedCleanly = !usedImmediateShutdown && (
+          !child ||
+          stoppedByPostmaster ||
+          (child.exitCode === 0 && child.signalCode === null)
+        );
         if (clean && !stoppedCleanly) {
           throw new TestPostgresShutdownError("Test PostgreSQL exited without clean shutdown; the template cannot be published");
         }

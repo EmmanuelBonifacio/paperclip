@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { applyPendingMigrations, inspectMigrations } from "./client.js";
+import { normalizeMigrationContent } from "./migration-content.js";
 import {
   EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   getEmbeddedPostgresTestSupport,
@@ -12,8 +13,10 @@ import {
 const support = await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
 const migrations = ["0466_drop_project_environment.sql", "0467_fair_human_torch.sql"];
-const hashes = await Promise.all(migrations.map(async (file) => createHash("sha256")
-  .update(await readFile(new URL(`./migrations/${file}`, import.meta.url))).digest("hex")));
+const hashes = await Promise.all(migrations.map(async (file) => {
+  const content = await readFile(new URL(`./migrations/${file}`, import.meta.url), "utf8");
+  return createHash("sha256").update(normalizeMigrationContent(content)).digest("hex");
+}));
 
 describePostgres("project environment rolling migration", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;

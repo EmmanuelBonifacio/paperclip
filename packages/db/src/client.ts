@@ -7,6 +7,7 @@ import { installDatabaseResponseCapture } from "./response-capture.js";
 import { installPreparedQueries } from "./prepared-queries.js";
 import { drizzleWithLazyTransactionQueries } from "./lazy-transaction-queries.js";
 import * as schema from "./schema/index.js";
+import { normalizeMigrationContent } from "./migration-content.js";
 
 const MIGRATIONS_FOLDER = fileURLToPath(new URL("./migrations", import.meta.url));
 const DRIZZLE_MIGRATIONS_TABLE = "__drizzle_migrations";
@@ -513,7 +514,9 @@ async function listJournalMigrationFiles(): Promise<string[]> {
 }
 
 async function readMigrationFileContent(migrationFile: string): Promise<string> {
-  return readFile(new URL(`./migrations/${migrationFile}`, import.meta.url), "utf8");
+  return normalizeMigrationContent(
+    await readFile(new URL(`./migrations/${migrationFile}`, import.meta.url), "utf8"),
+  );
 }
 
 async function orderMigrationsByJournal(migrationFiles: string[]): Promise<string[]> {
