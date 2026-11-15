@@ -347,7 +347,7 @@ export function getActorInfo(req: Request): (
     agentId: null;
     runId: string | null;
     agentApiKeyId: null;
-    actorSource: "local_implicit" | "session" | "board_key" | "mcp_oauth" | "cloud_tenant";
+    actorSource: "local_implicit" | "session" | "board_key" | "agent_sdk_key" | "mcp_oauth" | "cloud_tenant";
   }
 ) {
   assertAuthenticated(req);
@@ -366,6 +366,7 @@ export function getActorInfo(req: Request): (
   const actorSource =
     req.actor.source === "local_implicit" ||
       req.actor.source === "board_key" ||
+      req.actor.source === "agent_sdk_key" ||
       req.actor.source === "cloud_tenant" ||
       req.actor.source === "mcp_oauth"
       ? req.actor.source

@@ -1,1 +1,5 @@
 patches/*.patch whitespace=-space-before-tab
+# Migration hashes are sha256 of the raw file bytes. Keep LF so Windows
+# autocrlf does not change journal hashes for 0466/0467 (and every .sql).
+packages/db/src/migrations/*.sql text eol=lf
+packages/db/src/migrations/meta/* text eol=lf

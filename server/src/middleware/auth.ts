@@ -31,6 +31,8 @@ import { logger } from "./logger.js";
 import { localAgentProcessBoundary, type LocalAgentProcessBoundary } from "./local-agent-process-boundary.js";
 import { resolveRequestRunIdentity } from "../services/run-identity.js";
 import { boardAuthService } from "../services/board-auth.js";
+import { agentSdkKeysService, looksLikeAgentSdkKey } from "../services/agent-sdk-keys.js";
+import { isUiAuthDisabled } from "./agent-sdk-route-guard.js";
 import { preparedStatement } from "../services/prepared-statements.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 import { beginIdleTrackedWork } from "../services/task-admission.js";
@@ -238,12 +240,17 @@ const publicMcpGatewayProtocolPath = /^\/mcp\/gateways\/gw_[a-f0-9]{32}\/?$/i;
 
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
-  const localBoundary = opts.deploymentMode === "local_trusted"
+  const sdkKeys = agentSdkKeysService(db);
+  const uiAuthDisabled = isUiAuthDisabled();
+  const localBoundary = opts.deploymentMode === "local_trusted" && !uiAuthDisabled
     ? opts.localAgentProcessBoundary === undefined ? localAgentProcessBoundary() : opts.localAgentProcessBoundary
     : null;
   const authenticate: RequestHandler = async (req, _res, next) => {
+    // ENABLE_AUTH=false: no ambient local_implicit board. API integration
+    // requires Bearer pcp_sdk_… (enforced by agentSdkRouteGuard). Agent JWTs
+    // and agent API keys still authenticate below so runs can continue.
     req.actor =
-      opts.deploymentMode === "local_trusted"
+      opts.deploymentMode === "local_trusted" && !uiAuthDisabled
         ? {
             type: "board",
             userId: "local-board",
@@ -338,6 +345,33 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     const token = authHeader!.slice("bearer".length).trim();
     if (!token) {
       next(unauthorized("Empty bearer token; provide valid agent credentials and retry"));
+      return;
+    }
+
+    // SaaS SDK keys (`pcp_sdk_…`) are company-scoped integration credentials.
+    // Resolve them before board/agent keys so a stolen prefix cannot be
+    // misread as another credential family.
+    if (looksLikeAgentSdkKey(token)) {
+      const sdkKey = await sdkKeys.findActiveByToken(token);
+      if (!sdkKey) {
+        next(unauthorized("Invalid, expired, or revoked SDK API key"));
+        return;
+      }
+      await sdkKeys.touch(sdkKey.id);
+      req.actor = {
+        type: "board",
+        userId: `sdk-key:${sdkKey.id}`,
+        userName: sdkKey.name,
+        userEmail: null,
+        companyIds: [sdkKey.companyId],
+        companyId: sdkKey.companyId,
+        isInstanceAdmin: false,
+        keyId: sdkKey.id,
+        sdkScopes: sdkKey.scopes,
+        runId: runIdHeader || undefined,
+        source: "agent_sdk_key",
+      };
+      next();
       return;
     }
 

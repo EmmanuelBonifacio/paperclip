@@ -81,6 +81,7 @@ import { httpLogger, errorHandler } from "./middleware/index.js";
 import { skillAccessRequestContext } from "./services/skill-access.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
+import { agentSdkRouteGuard, isUiAuthDisabled } from "./middleware/agent-sdk-route-guard.js";
 import {
   privateHostnameGuard,
   resolvePrivateHostnameAllowSet,
@@ -102,6 +103,7 @@ import { cloudControlMiddleware } from "./middleware/cloud-control.js";
 import { runnerCallOutcomeMiddleware } from "./middleware/runner-call-outcome.js";
 import { cloudRoutes } from "./routes/cloud.js";
 import { companyRoutes } from "./routes/companies.js";
+import { agentSdkKeyRoutes } from "./routes/agent-sdk-keys.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
 import { companySkillPolicyRoutes } from "./routes/company-skill-policy.js";
 import { inboxAgentPolicyRoutes } from "./routes/inbox-agent-policy.js";
@@ -640,9 +642,17 @@ export async function createApp(
   app.use(runnerCallOutcomeMiddleware(db));
   app.use(connectionEventWakeRoutes(db));
   app.use(skillAccessRequestContext);
-  app.use("/api/auth", authRoutes(db));
-  if (opts.betterAuthHandler) {
-    app.all("/api/auth/{*authPath}", opts.betterAuthHandler);
+  // ENABLE_AUTH=false: do not serve login/register/session UI handlers.
+  // Integration API still requires Bearer pcp_sdk_… (never open).
+  if (!isUiAuthDisabled()) {
+    app.use("/api/auth", authRoutes(db));
+    if (opts.betterAuthHandler) {
+      app.all("/api/auth/{*authPath}", opts.betterAuthHandler);
+    }
+  } else {
+    app.use("/api/auth", (_req, res) => {
+      res.status(404).json({ error: "UI authentication is disabled (ENABLE_AUTH=false)" });
+    });
   }
   app.use(llmRoutes(db));
 
@@ -724,10 +734,12 @@ export async function createApp(
   const agentAvatars = agentAvatarRoutes();
   api.use(agentAvatars.router);
   api.use(boardMutationGuard());
+  api.use(agentSdkRouteGuard());
   api.use("/health", health);
   api.use(openApiRoutes());
   api.use("/cloud", cloudRoutes());
   api.use("/companies", companyRoutes(db, opts.storageService));
+  api.use(agentSdkKeyRoutes(db));
   api.use(llmRoutes(db));
   api.use(folderRoutes(db));
   api.use(companySkillRoutes(db, { pluginWorkerManager: workerManager }));
