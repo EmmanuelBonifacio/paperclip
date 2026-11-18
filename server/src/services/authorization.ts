@@ -86,6 +86,7 @@ export type AuthorizationActor =
       | "board_key"
       | "agent_key"
       | "agent_jwt"
+      | "agent_sdk_key"
       | "mcp_oauth"
       | "cloud_tenant"
       | "cloud_control"
@@ -738,7 +739,7 @@ export async function readInstanceAdmin(db: Db | DbTransaction, userId: string):
 export async function issueReadSqlCondition(db: Db | DbTransaction, actor: AuthorizationActor): Promise<SQL<boolean>> {
   if (actor.authorizingUserId) return issuePrivacyCondition(actor);
   if (issuePrivacyMode() !== "enforce") return sql<boolean>`true`;
-  if (actor.source === "local_implicit" || actor.isInstanceAdmin) return sql<boolean>`true`;
+  if (actor.source === "local_implicit" || actor.source === "agent_sdk_key" || actor.isInstanceAdmin) return sql<boolean>`true`;
   if (actor.type === "board" && !actor.ignoreInstanceAdmin && actor.source !== "cloud_tenant"
     && await readOncePerRequest(`admin:${actor.userId ?? ""}`, () => readInstanceAdmin(db, actor.userId ?? ""))) return sql<boolean>`true`;
   return issuePrivacyCondition(actor);
@@ -748,7 +749,7 @@ export async function issueReadSqlCondition(db: Db | DbTransaction, actor: Autho
 export async function projectReadSqlCondition(db: Db | DbTransaction, actor: AuthorizationActor): Promise<SQL<boolean>> {
   if (actor.authorizingUserId) return projectPrivacyCondition(actor);
   if (issuePrivacyMode() !== "enforce") return sql<boolean>`true`;
-  if (actor.source === "local_implicit" || actor.isInstanceAdmin) return sql<boolean>`true`;
+  if (actor.source === "local_implicit" || actor.source === "agent_sdk_key" || actor.isInstanceAdmin) return sql<boolean>`true`;
   if (
     actor.type === "board"
     && !actor.ignoreInstanceAdmin
@@ -2073,6 +2074,23 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
           action: input.action,
           reason: "allow_local_board",
           explanation: "Allowed because the actor is the local implicit board.",
+        });
+      }
+      // SaaS integration keys (`pcp_sdk_…`): company-scoped, allowlist-enforced
+      // by agentSdkRouteGuard. Do not elevate to instance admin.
+      if (input.actor.source === "agent_sdk_key") {
+        const allowedCompanies = input.actor.companyIds ?? [];
+        if (!allowedCompanies.includes(companyId)) {
+          return deny({
+            action: input.action,
+            reason: "deny_company_boundary",
+            explanation: "SDK key cannot access another company.",
+          });
+        }
+        return allow({
+          action: input.action,
+          reason: "allow_agent_sdk_key",
+          explanation: "Allowed by company-scoped SaaS SDK API key.",
         });
       }
       // MCP grants always use their explicitly consented company membership,
